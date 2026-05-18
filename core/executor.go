@@ -12,24 +12,17 @@ import (
 
 // ExecuteShell runs a shell command after validating it against the whitelist.
 // Write operations are restricted to the session workspace.
-func ExecuteShell(command string, sessionID string, allowedCmds []string, workspaceRoot string) (string, error) {
-	// Extract command name (first token)
-	tokens := strings.Fields(command)
-	if len(tokens) == 0 {
-		return "", fmt.Errorf("empty command")
-	}
-	cmdName := filepath.Base(tokens[0]) // strip path prefixes like /usr/bin/
-
+func ExecuteShell(command string, arguments []string, sessionID string, allowedCmds []string, workspaceRoot string) (string, error) {
 	// Check whitelist
 	allowed := false
 	for _, c := range allowedCmds {
-		if c == cmdName {
+		if c == command {
 			allowed = true
 			break
 		}
 	}
 	if !allowed {
-		return fmt.Sprintf("Rejected: command '%s' not in whitelist", cmdName), nil
+		return fmt.Sprintf("Rejected: command '%s' not in whitelist", command), nil
 	}
 
 	workDir := filepath.Join(workspaceRoot, sessionID)
@@ -37,18 +30,10 @@ func ExecuteShell(command string, sessionID string, allowedCmds []string, worksp
 		return "", fmt.Errorf("create workspace: %w", err)
 	}
 
-	// Validate file paths for write operations
-	isWriteOp := isWriteCommand(cmdName) || strings.Contains(command, ">")
-	if isWriteOp {
-		if err := validateWritePaths(command, workDir); err != nil {
-			return "", fmt.Errorf("path validation failed: %w", err)
-		}
-	}
-
 	// Execute via shell to support redirections
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	cmd := exec.CommandContext(ctx, command, arguments...)
 	cmd.Dir = workDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -60,14 +45,6 @@ func ExecuteShell(command string, sessionID string, allowedCmds []string, worksp
 	return string(output), nil
 }
 
-// isWriteCommand returns true for commands known to modify files.
-func isWriteCommand(cmdName string) bool {
-	switch cmdName {
-	case "rm", "mv", "cp", "echo", "cat", "tee":
-		return true
-	}
-	return false
-}
 
 // validateWritePaths checks that any file arguments in the command are within the workspace.
 // This is a basic check – more sophisticated parsing would be needed for full safety.

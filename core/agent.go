@@ -23,6 +23,13 @@ var Tools = []Tool{
 						Type:        "string",
 						Description: "The shell command to execute",
 					},
+					"arguments": {
+						Type:        "array",
+						Description: "Arguments for the shell command",
+						Items: &Property{
+							Type: "string",
+						},
+					},
 				},
 				Required: []string{"command"},
 			},
@@ -36,7 +43,7 @@ var Tools = []Tool{
 			Parameters: Parameters{
 				Type: "object",
 				Properties: map[string]Property{
-					"agent_name": {
+					"name": {
 						Type:        "string",
 						Description: "Name of the sub-agent, corresponding to a subdirectory under agents/",
 					},
@@ -45,7 +52,7 @@ var Tools = []Tool{
 						Description: "Task description. The sub-agent will complete this independently.",
 					},
 				},
-				Required: []string{"agent_name", "task"},
+				Required: []string{"name", "task"},
 			},
 		},
 	},
@@ -60,26 +67,29 @@ const interactionProtocol = `
 You have two tools. Use OpenAI Function Calling format: return tool_calls in your response.
 
 - shell: Execute a whitelisted shell command.
-  Parameter: command (string)
+  Parameters: command (string), arguments (array of strings)
+  Example: {"command": "ls", "arguments": ["-la"]}
 
 - agent: Spawn a sub-agent to complete a task.
-  Parameters: agent_name (string), task (string)
+  Parameters: name (string), task (string)
+  Example: {"name": "write_file", "task": "Write Hello World to test.txt"}
 
-When calling a tool, function.arguments is a JSON string:
-{"command": "ls -la"}
-{"agent_name": "write_file", "task": "Write Hello World to test.txt"}
+### Session Completion
+When the user's request is fully satisfied, respond with a message containing <FINAL> tags.
+The content between <FINAL> and </FINAL> will be returned as the final result.
 
-### Task Completion
-When the task is complete or cannot proceed, output in content:
-- Success: <FINAL>summary content</FINAL>
-- Failure: <FINAL>Cannot complete: reason</FINAL>
+- If the user input can be answered directly (no tools required, e.g., greetings or simple questions),
+  you MUST include <FINAL> in your very first response. Do NOT return intermediate thoughts.
+- If tools are needed, you may first think (content without <FINAL>) or call tools.
+  Once all actions are done, respond with a message containing only <FINAL>result</FINAL>.
 
 ### Important Rules
-1. Never return both content and tool_calls simultaneously
-2. When executing an action, return only tool_calls with content empty
-3. When ending a task, return only content (with <FINAL>), no tool_calls
+1. Never return both content and tool_calls simultaneously.
+2. When executing an action, return only tool_calls with content empty.
+3. When ending a task, return only content (with <FINAL>), no tool_calls.
 4. Call only one tool at a time. Wait for the result before deciding next step.
-5. You may write your thinking in content (without <FINAL>) as an intermediate step to continue the loop.
+5. You may write your thinking in content (without <FINAL>) ONLY as a prelude to calling a tool.
+6. If you can fulfill the request immediately, output <FINAL> directly — do not output mere pleasantries first.
 `
 
 type Agent struct {
@@ -149,6 +159,7 @@ func (a *Agent) Run(userInput string) (string, error) {
 		{Role: "system", Content: a.SystemPrompt},
 		{Role: "user", Content: userInput},
 	}
+	log.Printf("[session=%s step=%d] User input: %s", a.SessionID, 0, truncate(userInput, 200))
 
 	for step := 0; step < a.Config.LLM.MaxSteps; step++ {
 		log.Printf("[session=%s step=%d] Calling LLM...", a.SessionID, step)
@@ -160,22 +171,24 @@ func (a *Agent) Run(userInput string) (string, error) {
 			return "", fmt.Errorf("empty LLM response")
 		}
 		msg := resp.Choices[0].Message
+		log.Printf("[session=%s step=%d] LLM respond: %s", a.SessionID, step, truncate(msg.Content, 200))
 
 		// Case 1: model wants to call a tool
 		if len(msg.ToolCalls) > 0 {
 			tc := msg.ToolCalls[0]
-			log.Printf("[session=%s step=%d] Tool call: %s", a.SessionID, step, tc.Function.Name)
+			log.Printf("[session=%s step=%d] Tool call: %s(%s)", a.SessionID, step, tc.Function.Name, truncate(tc.Function.Arguments, 200))
 
 			var result string
 			switch tc.Function.Name {
 			case "shell":
 				var args struct {
 					Command string `json:"command"`
+					Arguments []string `json:"arguments,omitempty"`
 				}
 				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 					result = fmt.Sprintf("Invalid shell arguments: %v", err)
 				} else {
-					res, err := ExecuteShell(args.Command, a.SessionID, a.Config.Shell.AllowedCmd, a.Config.Agent.Workspace)
+					res, err := ExecuteShell(args.Command, args.Arguments, a.SessionID, a.Config.Shell.AllowedCmd, a.Config.Agent.Workspace)
 					if err != nil {
 						result = fmt.Sprintf("Execution failed: %s", err.Error())
 					} else {
@@ -184,13 +197,13 @@ func (a *Agent) Run(userInput string) (string, error) {
 				}
 			case "agent":
 				var args struct {
-					AgentName string `json:"agent_name"`
-					Task      string `json:"task"`
+					Name string `json:"name"`
+					Task string `json:"task"`
 				}
 				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 					result = fmt.Sprintf("Invalid agent arguments: %v", err)
 				} else {
-					res, err := ExecuteAgent(a, args.AgentName, args.Task)
+					res, err := ExecuteAgent(a, args.Name, args.Task)
 					if err != nil {
 						result = fmt.Sprintf("Agent execution failed: %s", err.Error())
 					} else {
