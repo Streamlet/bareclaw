@@ -30,10 +30,10 @@ type ShellConfig struct {
 }
 
 type CommandConfig struct {
-	Enabled    bool     `json:"enabled"`
-	PathPos    []uint   `json:"path_pos"`
-	PathAfter  []string `json:"path_after"`
-	PathPrefix []string `json:"path_prefix"`
+	Enabled    bool     `toml:"enabled"`
+	PathPos    []uint   `toml:"path_pos"`
+	PathAfter  []string `toml:"path_after"`
+	PathPrefix []string `toml:"path_prefix"`
 }
 
 func LoadConfig(path string) (*Config, error) {

@@ -1,9 +1,11 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +28,8 @@ func ExecuteShell(commands []ShellCommand, sessionID string, commandConfig map[s
 
 	exec_cmds := []*exec.Cmd{}
 	var lastStdout io.ReadCloser
-	for _, cmd := range commands {
+	var finalOutput bytes.Buffer
+	for i, cmd := range commands {
 		exec_cmd := exec.CommandContext(ctx, cmd.Command, cmd.Arguments...)
 		exec_cmd.Dir = workspace
 		if lastStdout != nil {
@@ -45,6 +48,8 @@ func ExecuteShell(commands []ShellCommand, sessionID string, commandConfig map[s
 				return "", fmt.Errorf("failed to create stderr file: %w", err)
 			}
 			exec_cmd.Stderr = stderrFile
+		} else if i == len(commands)-1 {
+			exec_cmd.Stderr = &finalOutput
 		}
 		if cmd.StdoutToFile != "" {
 			stdoutFile, err := os.Create(filepath.Join(workspace, cmd.StdoutToFile))
@@ -52,6 +57,8 @@ func ExecuteShell(commands []ShellCommand, sessionID string, commandConfig map[s
 				return "", fmt.Errorf("failed to create stdout file: %w", err)
 			}
 			exec_cmd.Stdout = stdoutFile
+		} else if i == len(commands)-1 {
+			exec_cmd.Stdout = &finalOutput
 		}
 		exec_cmds = append(exec_cmds, exec_cmd)
 		lastStdout = stdout
@@ -66,14 +73,7 @@ func ExecuteShell(commands []ShellCommand, sessionID string, commandConfig map[s
 			return "", fmt.Errorf("command execution failed: %w", err)
 		}
 	}
-	output, err := exec_cmds[len(exec_cmds)-1].CombinedOutput()
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("command timed out")
-		}
-		return "", fmt.Errorf("command failed: %w\nOutput: %s", err, string(output))
-	}
-	return string(output), nil
+	return finalOutput.String(), nil
 }
 
 func validateCommands(commands []ShellCommand, commandConfig map[string]CommandConfig, workspace string) error {
@@ -106,6 +106,7 @@ func validateCommands(commands []ShellCommand, commandConfig map[string]CommandC
 		}
 		if len(cfg.PathPrefix) > 0 {
 			for _, prefix := range cfg.PathPrefix {
+				log.Printf("validating with prefix %s", prefix)
 				for _, arg := range command.Arguments {
 					if strings.HasPrefix(arg, prefix) {
 						if err := validatePath(arg[len(prefix):], workspace); err != nil {
