@@ -39,36 +39,65 @@ var Tools = []Tool{
 		Type: "function",
 		Function: ToolFunction{
 			Name:        ToolShellName,
-			Description: "Execute a whitelisted shell command.",
+			Description: "Execute shell command.",
 			Parameters: Parameters{
 				Type: "object",
 				Properties: map[string]Property{
-					"command": {
-						Type:        "string",
-						Description: "The shell command to execute",
-					},
-					"arguments": {
+					"commands": {
 						Type:        "array",
-						Description: "Arguments for the shell command",
-						Items: &Property{
-							Type: "string",
+						Description: "The shell command pipeline to execute, the previous command's output will be piped to the next command as input.",
+						Items: &Parameters{
+							Type: "object",
+							Properties: map[string]Property{
+								"command": {
+									Type:        "string",
+									Description: "The single shell command to execute",
+								},
+								"arguments": {
+									Type:        "array",
+									Description: "Arguments for the shell command",
+									Items: &Parameters{
+										Type: "string",
+									},
+								},
+								"stdout_to_file": {
+									Type:        "string",
+									Description: "If set, redirect stdout to a file. Keep empty to disable redirection. Only the last command in the pipeline can redirect output to a file.",
+								},
+								"stderr_to_file": {
+									Type:        "string",
+									Description: "If set, redirect stderr to a file. Keep empty to disable redirection. Conflicts with stderr_to_stdout if both are set.",
+								},
+								"stderr_to_stdout": {
+									Type:        "boolean",
+									Description: "Whether to redirect stderr to stdout. Conflicts with stderr_to_file if both are set.",
+								},
+							},
+							Required: []string{"command"},
 						},
 					},
 				},
-				Required: []string{"command"},
+				Required: []string{"commands"},
 			},
 		},
 	},
 }
 
-type ShellArguments struct {
-	Command   string   `json:"command"`
-	Arguments []string `json:"arguments,omitempty"`
-}
-
 type AgentArguments struct {
 	Name string `json:"name"`
 	Task string `json:"task"`
+}
+
+type ShellCommand struct {
+	Command        string   `json:"command"`
+	Arguments      []string `json:"arguments,omitempty"`
+	StdoutToFile   string   `json:"stdout_to_file,omitempty"`
+	StderrToFile   string   `json:"stderr_to_file,omitempty"`
+	StderrToStdout bool     `json:"stderr_to_stdout,omitempty"`
+}
+
+type ShellArguments struct {
+	Commands []ShellCommand `json:"commands"`
 }
 
 var subAgentsDir = "agents" // Relative path to sub-agents from each agent directory
@@ -219,11 +248,7 @@ func (a *Agent) Run(userInput string) (string, error) {
 					if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 						result = fmt.Sprintf("Invalid shell arguments: %v", err)
 					} else {
-						subWorkspace := filepath.Join(a.Workspace, args.Command)
-						if _, err := os.Stat(subWorkspace); os.IsNotExist(err) {
-							os.Mkdir(subWorkspace, 0755)
-						}
-						res, err := ExecuteShell(args.Command, args.Arguments, a.SessionID, a.Config.Shell.AllowedCmd, subWorkspace)
+						res, err := ExecuteShell(args.Commands, a.SessionID, a.Config.Shell.Command, a.Workspace)
 						if err != nil {
 							result = fmt.Sprintf("Execution failed: %s", err.Error())
 						} else {

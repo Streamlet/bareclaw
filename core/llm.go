@@ -66,9 +66,9 @@ type Parameters struct {
 }
 
 type Property struct {
-	Type        string    `json:"type"`
-	Description string    `json:"description"`
-	Items       *Property `json:"items,omitempty"` // For array types
+	Type        string      `json:"type"`
+	Description string      `json:"description"`
+	Items       *Parameters `json:"items,omitempty"` // For array types
 }
 
 type ChatResponse struct {

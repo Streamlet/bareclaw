@@ -26,7 +26,14 @@ type AgentConfig struct {
 }
 
 type ShellConfig struct {
-	AllowedCmd []string `toml:"allowed_cmd"`
+	Command map[string]CommandConfig `toml:"command"`
+}
+
+type CommandConfig struct {
+	Enabled    bool     `json:"enabled"`
+	PathPos    []uint   `json:"path_pos"`
+	PathAfter  []string `json:"path_after"`
+	PathPrefix []string `json:"path_prefix"`
 }
 
 func LoadConfig(path string) (*Config, error) {
