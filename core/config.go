@@ -21,8 +21,9 @@ type LLMConfig struct {
 }
 
 type AgentConfig struct {
-	Root      string `toml:"root"`
-	Workspace string `toml:"workspace"`
+	SystemDir  string `toml:"system_dir"`
+	HistoryDir string `toml:"history_dir"`
+	WorkDir    string `toml:"work_dir"`
 }
 
 type ShellConfig struct {
@@ -47,16 +48,22 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("api_key, base_url, and model must be set in config [llm]")
 	}
 	// Resolve relative paths to absolute
-	if !filepath.IsAbs(cfg.Agent.Root) {
-		absRoot, err := filepath.Abs(cfg.Agent.Root)
+	if !filepath.IsAbs(cfg.Agent.SystemDir) {
+		absSystemDir, err := filepath.Abs(cfg.Agent.SystemDir)
 		if err == nil {
-			cfg.Agent.Root = absRoot
+			cfg.Agent.SystemDir = absSystemDir
 		}
 	}
-	if !filepath.IsAbs(cfg.Agent.Workspace) {
-		absWs, err := filepath.Abs(cfg.Agent.Workspace)
+	if !filepath.IsAbs(cfg.Agent.HistoryDir) {
+		absHistoryDir, err := filepath.Abs(cfg.Agent.HistoryDir)
 		if err == nil {
-			cfg.Agent.Workspace = absWs
+			cfg.Agent.HistoryDir = absHistoryDir
+		}
+	}
+	if !filepath.IsAbs(cfg.Agent.WorkDir) {
+		absWorkDir, err := filepath.Abs(cfg.Agent.WorkDir)
+		if err == nil {
+			cfg.Agent.WorkDir = absWorkDir
 		}
 	}
 	return &cfg, nil

@@ -9,15 +9,23 @@ import (
 	"strings"
 )
 
-var ToolAgentName = "agent"
-var ToolShellName = "shell"
+const (
+	SUB_AGENTS_DIR       = "agents" // Relative path to sub-agents from each agent directory
+	RULES_MD             = "rules.md"
+	AGENT_MD             = "agent.md"
+	API_MD               = "api.md"
+	AGENTS_PLACEHOLDER   = "{{AGENTS}}"
+	COMMANDS_PLACEHOLDER = "{{COMMANDS}}"
+	TOOL_AGENT           = "agent"
+	TOOL_SHELL           = "shell"
+)
 
 // Fixed tool definitions used by every agent.
 var Tools = []Tool{
 	{
 		Type: "function",
 		Function: ToolFunction{
-			Name:        ToolAgentName,
+			Name:        TOOL_AGENT,
 			Description: "Spawn a sub-agent to complete a task. Sub-agents are independent agents with their own system prompt and capabilities.",
 			Parameters: JsonSchema{
 				Type: "object",
@@ -32,7 +40,7 @@ var Tools = []Tool{
 	{
 		Type: "function",
 		Function: ToolFunction{
-			Name:        ToolShellName,
+			Name:        TOOL_SHELL,
 			Description: "Execute shell commands.",
 			Parameters: JsonSchema{
 				Type: "object",
@@ -117,52 +125,72 @@ type ShellStderrRedirection struct {
 	ToStdOut bool   `json:"to_stdout,omitempty"`
 }
 
-var subAgentsDir = "agents" // Relative path to sub-agents from each agent directory
-var rulesPromptFileName = "rules.md"
-var agentPromptFileName = "agent.md"
-var apiPromptFileName = "api.md"
-var subAgentsPlaceholder = "{{AGENTS}}"
-var availableCommandsPlaceholder = "{{COMMANDS}}"
-
 type Agent struct {
+	Name        string
+	Config      *Config
 	RulesPrompt string
 	AgentPrompt string
-	Config      *Config
 	SessionID   string
-	AgentDir    string // directory containing system.md and agents/
-	Workspace   string
+	ToolCallID  string
+	Messages    []Message
+	SystemDir   string
+	HistoryDir  string
+	WorkDir     string
 }
 
 // LoadAgent reads agents.md, scans sub-agents, replaces {{AGENTS}}, and returns an Agent.
 // It works identically for root and sub-agents.
-func LoadAgent(cfg *Config, dir string, rulesPrompt string, sessionID string, workspace string) (*Agent, error) {
-	if rulesPrompt == "" {
+func LoadAgent(config *Config, parent *Agent, dir string, toolCallID string) (*Agent, error) {
+	var agent Agent
+	agent.Name = filepath.Base(dir)
+	agent.ToolCallID = toolCallID
+	agent.SystemDir = dir
+	if parent != nil {
+		agent.Config = parent.Config
+		agent.SessionID = parent.SessionID
+		agent.HistoryDir = parent.HistoryDir
+		agent.WorkDir = parent.WorkDir
+	} else {
+		agent.Config = config
+		agent.SessionID = GenerateSessionID()
+		agent.HistoryDir = filepath.Join(config.Agent.HistoryDir, agent.SessionID)
+		_ = os.MkdirAll(agent.HistoryDir, 0755)
+		agent.WorkDir = filepath.Join(config.Agent.WorkDir, agent.SessionID)
+		_ = os.MkdirAll(agent.WorkDir, 0755)
+	}
+	if agent.Config == nil {
+		return nil, fmt.Errorf("config must be provided for root agent")
+	}
+
+	if parent != nil {
+		agent.RulesPrompt = parent.RulesPrompt
+	} else {
 		// Read rule prompt
-		rulePromptFilePath := filepath.Join(dir, rulesPromptFileName)
+		rulePromptFilePath := filepath.Join(dir, RULES_MD)
 		rulePromptBytes, err := os.ReadFile(rulePromptFilePath)
 		if err != nil {
-			return nil, fmt.Errorf("read %s from %s: %w", rulesPromptFileName, dir, err)
+			return nil, fmt.Errorf("read %s from %s: %w", RULES_MD, dir, err)
 		}
-		rulesPrompt = string(rulePromptBytes)
+		agent.RulesPrompt = string(rulePromptBytes)
 	}
 
 	// Read agent prompt
-	agentPromptFilePath := filepath.Join(dir, agentPromptFileName)
+	agentPromptFilePath := filepath.Join(dir, AGENT_MD)
 	agentPromptBytes, err := os.ReadFile(agentPromptFilePath)
 	if err != nil {
-		return nil, fmt.Errorf("read %s from %s: %w", agentPromptFileName, dir, err)
+		return nil, fmt.Errorf("read %s from %s: %w", AGENT_MD, dir, err)
 	}
-	agentPrompt := string(agentPromptBytes)
+	agent.AgentPrompt = string(agentPromptBytes)
 
 	var availableCommands string
-	if len(cfg.Shell.Commands) > 0 {
-		availableCommands = strings.Join(cfg.Shell.Commands, ", ")
+	if len(agent.Config.Shell.Commands) > 0 {
+		availableCommands = strings.Join(agent.Config.Shell.Commands, ", ")
 	} else {
 		availableCommands = "(None)"
 	}
 
 	// Look for sub-agents
-	agentsDir := filepath.Join(dir, subAgentsDir)
+	agentsDir := filepath.Join(dir, SUB_AGENTS_DIR)
 	entries, err := os.ReadDir(agentsDir)
 	var agentNames []string
 	var agentDescriptions []string
@@ -171,7 +199,7 @@ func LoadAgent(cfg *Config, dir string, rulesPrompt string, sessionID string, wo
 			if !e.IsDir() {
 				continue
 			}
-			apiPromptPath := filepath.Join(agentsDir, e.Name(), apiPromptFileName)
+			apiPromptPath := filepath.Join(agentsDir, e.Name(), API_MD)
 			apiPromptBytes, err := os.ReadFile(apiPromptPath)
 			if err != nil {
 				// Skip sub-agents without api.md
@@ -190,35 +218,60 @@ func LoadAgent(cfg *Config, dir string, rulesPrompt string, sessionID string, wo
 	}
 
 	// Replace placeholders
-	rulesPrompt = strings.Replace(rulesPrompt, availableCommandsPlaceholder, availableCommands, -1)
-	agentPrompt = strings.Replace(agentPrompt, subAgentsPlaceholder, subAgentDescription, -1)
+	agent.RulesPrompt = strings.Replace(agent.RulesPrompt, COMMANDS_PLACEHOLDER, availableCommands, -1)
+	agent.AgentPrompt = strings.Replace(agent.AgentPrompt, AGENTS_PLACEHOLDER, subAgentDescription, -1)
 
-	return &Agent{
-		RulesPrompt: rulesPrompt,
-		AgentPrompt: agentPrompt,
-		Config:      cfg,
-		SessionID:   sessionID,
-		AgentDir:    dir,
-		Workspace:   workspace,
-	}, nil
+	return &agent, nil
+}
+
+func (a *Agent) appendHistory(message Message) {
+	a.Messages = append(a.Messages, message)
+	// Save history to file after each update
+	if a.HistoryDir != "" {
+		var historyFilePath string
+		if a.ToolCallID == "" {
+			historyFilePath = filepath.Join(a.HistoryDir, "main.json")
+		} else {
+			historyFilePath = filepath.Join(a.HistoryDir, fmt.Sprintf("%s.json", a.ToolCallID))
+		}
+		messageData, err := json.Marshal(message)
+		if err != nil {
+			log.Printf("Failed to marshal history: %v", err)
+			return
+		}
+		f, err := os.OpenFile(historyFilePath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		if err != nil {
+			log.Printf("Failed to open history file: %v", err)
+			return
+		}
+		defer f.Close()
+		_, err = f.Write(messageData)
+		if err != nil {
+			log.Printf("Failed to write history: %v", err)
+			return
+		}
+		_, err = f.Write([]byte("\n"))
+		if err != nil {
+			log.Printf("Failed to write history newline: %v", err)
+			return
+		}
+	}
 }
 
 // Run executes the main agent loop with the given user input.
 func (a *Agent) Run(userInput string) (string, error) {
-	if err := os.MkdirAll(a.Workspace, 0755); err != nil {
+	if err := os.MkdirAll(a.WorkDir, 0755); err != nil {
 		return "", fmt.Errorf("create workspace: %w", err)
 	}
 
-	messages := []Message{
-		{Role: RoleSystem, Content: a.RulesPrompt + "\n" + a.AgentPrompt},
-		{Role: RoleUser, Content: userInput},
+	if a.Messages == nil {
+		a.appendHistory(Message{Role: RoleSystem, Content: a.RulesPrompt + "\n" + a.AgentPrompt})
 	}
-	log.Printf("[session=%s step=%d] User input: %s", a.SessionID, 0, truncate(userInput, 200))
+	a.appendHistory(Message{Role: RoleUser, Content: userInput})
 
 	for step := 0; step < a.Config.LLM.MaxSteps; step++ {
-		log.Printf("[session=%s step=%d] Calling LLM...", a.SessionID, step)
 		request := ChatCompletionRequest{
-			Messages: messages,
+			Messages: a.Messages,
 			Tools:    Tools,
 		}
 		response, err := Chat(&a.Config.LLM, request)
@@ -229,34 +282,33 @@ func (a *Agent) Run(userInput string) (string, error) {
 			return "", fmt.Errorf("empty LLM response")
 		}
 		msg := response.Choices[0].Message
-		log.Printf("[session=%s step=%d] LLM respond: %s", a.SessionID, step, truncate(msg.Content, 200))
+		log.Printf("[session=%s toolcall=%s step=%d] LLM respond: %s [%s]", a.SessionID, a.ToolCallID, step, truncate(msg.Content, 200), msg.ToolCalls)
 
 		if len(msg.ToolCalls) > 0 {
-			messages = append(messages, Message{
+			a.appendHistory(Message{
 				Role:      RoleAssistant,
 				Content:   msg.Content,
 				ToolCalls: msg.ToolCalls,
 			})
 			for _, tc := range msg.ToolCalls {
-				log.Printf("[session=%s step=%d] Tool call: %s(%s)", a.SessionID, step, tc.Function.Name, truncate(tc.Function.Arguments, 200))
 				var result string
 				switch tc.Function.Name {
-				case ToolAgentName:
+				case TOOL_AGENT:
 					var args AgentArguments
 					if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 						result = fmt.Sprintf("Invalid agent arguments: %v", err)
 					} else {
-						log.Printf(a.AgentDir, subAgentsDir, args.Name)
-						subAgentDir := filepath.Join(a.AgentDir, subAgentsDir, args.Name)
-						log.Printf(subAgentDir)
+						log.Print(a.SystemDir, SUB_AGENTS_DIR, args.Name)
+						subAgentDir := filepath.Join(a.SystemDir, SUB_AGENTS_DIR, args.Name)
+						log.Print(subAgentDir)
 						if _, err := os.Stat(subAgentDir); os.IsNotExist(err) {
 							return fmt.Sprintf("Agent %s not found: %s not exists", args.Name, subAgentDir), nil
 						}
-						subWorkspace := filepath.Join(a.Workspace, args.Name)
+						subWorkspace := filepath.Join(a.WorkDir, args.Name)
 						if _, err := os.Stat(subWorkspace); os.IsNotExist(err) {
 							os.Mkdir(subWorkspace, 0755)
 						}
-						subAgent, err := LoadAgent(a.Config, subAgentDir, a.RulesPrompt, a.SessionID, subWorkspace)
+						subAgent, err := LoadAgent(nil, a, subAgentDir, tc.ID)
 						if err != nil {
 							return "", fmt.Errorf("load sub-agent %s: %w", args.Name, err)
 						}
@@ -267,12 +319,12 @@ func (a *Agent) Run(userInput string) (string, error) {
 							result = res
 						}
 					}
-				case ToolShellName:
+				case TOOL_SHELL:
 					var args ShellArguments
 					if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 						result = fmt.Sprintf("Invalid shell arguments: %v", err)
 					} else {
-						output, exitCodes, err := ExecuteShell(args.Commands, a.SessionID, a.Config.Shell, a.Workspace)
+						output, exitCodes, err := ExecuteShell(args.Commands, a.SessionID, a.Config.Shell, a.WorkDir)
 						if err != nil {
 							result = fmt.Sprintf("Execution failed: %s", err.Error())
 						} else {
@@ -287,8 +339,7 @@ func (a *Agent) Run(userInput string) (string, error) {
 				default:
 					result = fmt.Sprintf("Unknown tool: %s", tc.Function.Name)
 				}
-				log.Printf("[session=%s step=%d] Tool result: %s", a.SessionID, step, truncate(result, 200))
-				messages = append(messages, Message{
+				a.appendHistory(Message{
 					Role:       RoleTool,
 					ToolCallID: tc.ID,
 					Content:    result,
@@ -296,8 +347,7 @@ func (a *Agent) Run(userInput string) (string, error) {
 			}
 		} else {
 			if msg.Content != "" {
-				log.Printf("[session=%s step=%d] Task complete", a.SessionID, step)
-				messages = append(messages, Message{
+				a.appendHistory(Message{
 					Role:    RoleAssistant,
 					Content: msg.Content,
 				})

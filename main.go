@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"seedclaw/core"
 	"strings"
 )
@@ -20,11 +19,7 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	sessionID := core.GenerateSessionID()
-	log.Printf("[session=%s] Session started", sessionID)
-	workspace := filepath.Join(cfg.Agent.Workspace, sessionID)
-
-	rootAgent, err := core.LoadAgent(cfg, cfg.Agent.Root, "", sessionID, workspace)
+	rootAgent, err := core.LoadAgent(cfg, nil, cfg.Agent.SystemDir, "")
 	if err != nil {
 		log.Fatalf("Failed to load root agent: %v", err)
 	}
@@ -40,7 +35,7 @@ func main() {
 		fmt.Println(result)
 	} else {
 		// Interactive mode
-		fmt.Printf("SeedClaw interactive mode (session: %s). Type /quit to exit.\n", sessionID)
+		fmt.Printf("SeedClaw interactive mode. Type /quit to exit.\n")
 		scanner := bufio.NewScanner(os.Stdin)
 		for {
 			fmt.Print("> ")
