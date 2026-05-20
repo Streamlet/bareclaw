@@ -19,17 +19,11 @@ var Tools = []Tool{
 		Function: ToolFunction{
 			Name:        ToolAgentName,
 			Description: "Spawn a sub-agent to complete a task. Sub-agents are independent agents with their own system prompt and capabilities.",
-			Parameters: Parameters{
+			Parameters: JsonSchema{
 				Type: "object",
-				Properties: map[string]Property{
-					"name": {
-						Type:        "string",
-						Description: "Name of the sub-agent, corresponding to a subdirectory under agents/",
-					},
-					"task": {
-						Type:        "string",
-						Description: "Task description. The sub-agent will complete this independently.",
-					},
+				Properties: map[string]JsonSchema{
+					"name": {Type: "string", Description: "Name of the sub-agent, corresponding to a subdirectory under agents/"},
+					"task": {Type: "string", Description: "Task description. The sub-agent will complete this independently."},
 				},
 				Required: []string{"name", "task"},
 			},
@@ -39,38 +33,46 @@ var Tools = []Tool{
 		Type: "function",
 		Function: ToolFunction{
 			Name:        ToolShellName,
-			Description: "Execute shell command.",
-			Parameters: Parameters{
+			Description: "Execute shell commands.",
+			Parameters: JsonSchema{
 				Type: "object",
-				Properties: map[string]Property{
+				Properties: map[string]JsonSchema{
 					"commands": {
 						Type:        "array",
-						Description: "The shell command pipeline to execute, the previous command's output will be piped to the next command as input.",
-						Items: &Parameters{
-							Type: "object",
-							Properties: map[string]Property{
-								"command": {
-									Type:        "string",
-									Description: "The single shell command to execute",
-								},
+						Description: "The shell command pipeline to execute, the previous command's output will be piped to the next command as input. Equal to `cmd1 | cmd2 | ...`. Must not use '|' in individual commands.",
+						Items: &JsonSchema{
+							Type:        "object",
+							Description: "A single shell command with optional arguments and redirections. Redirections will only work for the last command in the pipeline.",
+							Properties: map[string]JsonSchema{
+								"command": {Type: "string", Description: "The single shell command to execute. Must not contain spaces or redirection operators ('>', '>>', '2>', '2>>', '2>&1'). Put arguments in the 'arguments' field, and put redirections in 'redirection' field."},
 								"arguments": {
 									Type:        "array",
-									Description: "Arguments for the shell command",
-									Items: &Parameters{
+									Description: "Arguments for the shell command. Must not contain redirection operators ('>', '>>', '2>', '2>>', '2>&1'). Put redirections in the 'redirection' field.",
+									Items: &JsonSchema{
 										Type: "string",
 									},
 								},
-								"stdout_to_file": {
-									Type:        "string",
-									Description: "If set, redirect stdout to a file. Keep empty to disable redirection. Only the last command in the pipeline can redirect output to a file.",
-								},
-								"stderr_to_file": {
-									Type:        "string",
-									Description: "If set, redirect stderr to a file. Keep empty to disable redirection. Conflicts with stderr_to_stdout if both are set.",
-								},
-								"stderr_to_stdout": {
-									Type:        "boolean",
-									Description: "Whether to redirect stderr to stdout. Conflicts with stderr_to_file if both are set.",
+								"redirection": {
+									Type:        "object",
+									Description: "If set, redirect stdout and/or stderr of the command. Only the last command in the pipeline can have redirection.",
+									Properties: map[string]JsonSchema{
+										"stdout": {
+											Type: "object",
+											Properties: map[string]JsonSchema{
+												"file":      {Type: "string", Description: "Redirect stdout to this file."},
+												"append":    {Type: "boolean", Description: "Use append mode for stdout redirection. Default is false (overwrite)."},
+												"to_stderr": {Type: "boolean", Description: "Redirect stdout to stderr. Default is false."},
+											},
+										},
+										"stderr": {
+											Type: "object",
+											Properties: map[string]JsonSchema{
+												"file":      {Type: "string", Description: "Redirect stderr to this file."},
+												"append":    {Type: "boolean", Description: "Use append mode for stderr redirection. Default is false (overwrite)."},
+												"to_stdout": {Type: "boolean", Description: "Redirect stderr to stdout. Default is false."},
+											},
+										},
+									},
 								},
 							},
 							Required: []string{"command"},
@@ -88,30 +90,40 @@ type AgentArguments struct {
 	Task string `json:"task"`
 }
 
-type ShellCommand struct {
-	Command        string   `json:"command"`
-	Arguments      []string `json:"arguments,omitempty"`
-	StdoutToFile   string   `json:"stdout_to_file,omitempty"`
-	StderrToFile   string   `json:"stderr_to_file,omitempty"`
-	StderrToStdout bool     `json:"stderr_to_stdout,omitempty"`
-}
-
 type ShellArguments struct {
 	Commands []ShellCommand `json:"commands"`
+}
+
+type ShellCommand struct {
+	Command     string           `json:"command"`
+	Arguments   []string         `json:"arguments,omitempty"`
+	Redirection ShellRedirection `json:"redirection,omitempty"`
+}
+
+type ShellRedirection struct {
+	StdOut ShellStdoutRedirection `json:"stdout,omitempty"`
+	StdErr ShellStderrRedirection `json:"stderr,omitempty"`
+}
+
+type ShellStdoutRedirection struct {
+	File     string `json:"file,omitempty"`
+	Append   bool   `json:"append,omitempty"`
+	ToStdErr bool   `json:"to_stderr,omitempty"`
+}
+
+type ShellStderrRedirection struct {
+	File     string `json:"file,omitempty"`
+	Append   bool   `json:"append,omitempty"`
+	ToStdOut bool   `json:"to_stdout,omitempty"`
 }
 
 var subAgentsDir = "agents" // Relative path to sub-agents from each agent directory
 var rulesPromptFileName = "rules.md"
 var agentPromptFileName = "agent.md"
 var apiPromptFileName = "api.md"
-var subAgentDescriptionTemplate = `
-================================================================================
-Agent Name: %s
-Agent Description:
---------------------------------------------------------------------------------
-%s
-================================================================================
-`
+var subAgentsDescriptionPlaceholder = "{{AGENTS_DESCRIPTION}}"
+var availableSubAgentsPlaceholder = "{{AVAILABLE_AGENTS}}"
+var availableCommandsPlaceholder = "{{AVAILABLE_COMMANDS}}"
 
 type Agent struct {
 	RulesPrompt string
@@ -134,6 +146,7 @@ func LoadAgent(cfg *Config, dir string, rulesPrompt string, sessionID string, wo
 		}
 		rulesPrompt = string(rulePromptBytes)
 	}
+
 	// Read agent prompt
 	agentPromptFilePath := filepath.Join(dir, agentPromptFileName)
 	agentPromptBytes, err := os.ReadFile(agentPromptFilePath)
@@ -142,12 +155,19 @@ func LoadAgent(cfg *Config, dir string, rulesPrompt string, sessionID string, wo
 	}
 	agentPrompt := string(agentPromptBytes)
 
+	var availableCommands string
+	if len(cfg.Shell.Commands) > 0 {
+		availableCommands = strings.Join(cfg.Shell.Commands, ", ")
+	} else {
+		availableCommands = "(None)"
+	}
+
 	// Look for sub-agents
 	agentsDir := filepath.Join(dir, subAgentsDir)
 	entries, err := os.ReadDir(agentsDir)
-	var agentDescriptions string
+	var agentNames []string
+	var agentDescriptions []string
 	if err == nil && len(entries) > 0 {
-		var subAgents []string
 		for _, e := range entries {
 			if !e.IsDir() {
 				continue
@@ -158,18 +178,30 @@ func LoadAgent(cfg *Config, dir string, rulesPrompt string, sessionID string, wo
 				// Skip sub-agents without api.md
 				continue
 			}
-			subAgents = append(subAgents, fmt.Sprintf(subAgentDescriptionTemplate, e.Name(), string(apiPromptBytes)))
-		}
-		if len(subAgents) > 0 {
-			agentDescriptions = strings.Join(subAgents, "\n")
+			agentNames = append(agentNames, e.Name())
+			agentDescriptions = append(agentDescriptions, string(apiPromptBytes))
 		}
 	}
-	if agentDescriptions == "" {
-		agentDescriptions = "No sub-agents available."
+	var availableSubAgents string
+	if len(agentNames) > 0 {
+		availableSubAgents = strings.Join(agentNames, ", ")
+	} else {
+		availableSubAgents = "(None)"
+	}
+	var subAgentDescription string
+	if len(agentDescriptions) > 0 {
+		subAgentDescription = strings.Join(agentDescriptions, "\n")
+	} else {
+		subAgentDescription = "No sub-agents available."
 	}
 
-	// Replace placeholder and append protocol
-	agentPrompt = strings.Replace(agentPrompt, "{{AGENTS}}", agentDescriptions, 1)
+	// Replace placeholders
+	rulesPrompt = strings.Replace(rulesPrompt, availableSubAgentsPlaceholder, availableSubAgents, -1)
+	rulesPrompt = strings.Replace(rulesPrompt, availableCommandsPlaceholder, availableCommands, -1)
+	rulesPrompt = strings.Replace(rulesPrompt, subAgentsDescriptionPlaceholder, subAgentDescription, -1)
+	agentPrompt = strings.Replace(agentPrompt, availableSubAgentsPlaceholder, availableSubAgents, -1)
+	agentPrompt = strings.Replace(agentPrompt, availableCommandsPlaceholder, availableCommands, -1)
+	agentPrompt = strings.Replace(agentPrompt, subAgentsDescriptionPlaceholder, subAgentDescription, -1)
 
 	return &Agent{
 		RulesPrompt: rulesPrompt,
@@ -199,6 +231,7 @@ func (a *Agent) Run(userInput string) (string, error) {
 			Messages: messages,
 			Tools:    Tools,
 		}
+		//log.Printf("[session=%s step=%d] LLM request:\n%s", a.SessionID, step, request)
 		response, err := Chat(&a.Config.LLM, request)
 		if err != nil {
 			return "", fmt.Errorf("LLM call failed: %w", err)
@@ -248,11 +281,16 @@ func (a *Agent) Run(userInput string) (string, error) {
 					if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 						result = fmt.Sprintf("Invalid shell arguments: %v", err)
 					} else {
-						res, err := ExecuteShell(args.Commands, a.SessionID, a.Config.Shell.Command, a.Workspace)
+						output, exitCodes, err := ExecuteShell(args.Commands, a.SessionID, a.Config.Shell, a.Workspace)
 						if err != nil {
 							result = fmt.Sprintf("Execution failed: %s", err.Error())
 						} else {
-							result = res
+							result = "Exit Codes: " + fmt.Sprint(exitCodes)
+							if output != "" {
+								result += "\nOutput:\n" + output
+							} else {
+								result += "\n(No output)"
+							}
 						}
 					}
 				default:

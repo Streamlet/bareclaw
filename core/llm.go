@@ -54,21 +54,16 @@ type Tool struct {
 type ToolFunction struct {
 	Name        string     `json:"name"`
 	Description string     `json:"description"`
-	Parameters  Parameters `json:"parameters"`
+	Parameters  JsonSchema `json:"parameters"`
 	Strict      *bool      `json:"strict,omitempty"`
 }
 
-type Parameters struct {
-	Type                 string              `json:"type"`
-	Properties           map[string]Property `json:"properties,omitempty"`
-	Required             []string            `json:"required,omitempty"`
-	AdditionalProperties interface{}         `json:"additionalProperties,omitempty"`
-}
-
-type Property struct {
-	Type        string      `json:"type"`
-	Description string      `json:"description"`
-	Items       *Parameters `json:"items,omitempty"` // For array types
+type JsonSchema struct {
+	Type        string                `json:"type"`
+	Description string                `json:"description"`
+	Required    []string              `json:"required,omitempty"`
+	Properties  map[string]JsonSchema `json:"properties,omitempty"` // For object types
+	Items       *JsonSchema           `json:"items,omitempty"`      // For array types
 }
 
 type ChatResponse struct {

@@ -26,11 +26,11 @@ type AgentConfig struct {
 }
 
 type ShellConfig struct {
-	Command map[string]CommandConfig `toml:"command"`
+	Commands     []string                 `toml:"commands"`
+	PathLocation map[string]CommandConfig `toml:"path_location"`
 }
 
 type CommandConfig struct {
-	Enabled    bool     `toml:"enabled"`
 	PathPos    []uint   `toml:"path_pos"`
 	PathAfter  []string `toml:"path_after"`
 	PathPrefix []string `toml:"path_prefix"`
