@@ -18,6 +18,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	os.MkdirAll(cfg.Agent.HistoryDir, 0755)
+	os.MkdirAll(cfg.Agent.WorkDir, 0755)
 
 	rootAgent, err := core.LoadAgent(cfg, nil, cfg.Agent.SystemDir, "")
 	if err != nil {

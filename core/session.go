@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-// GenerateSessionID returns a unique session identifier.
 func GenerateSessionID() string {
 	ts := time.Now().Format("20060102-150405")
 	rnd := make([]byte, 6)

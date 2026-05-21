@@ -102,7 +102,6 @@ var RoleUser = "user"
 var RoleAssistant = "assistant"
 var RoleTool = "tool"
 
-// Chat sends a non-streaming completion request to the LLM.
 func Chat(cfg *LLMConfig, request ChatCompletionRequest) (*ChatResponse, error) {
 	request.Model = cfg.Model
 	jsonData, err := json.Marshal(request)

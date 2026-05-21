@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,16 +13,14 @@ import (
 	"time"
 )
 
-// ExecuteShell runs a shell command after validating it against the whitelist.
-// Write operations are restricted to the session workspace.
-func ExecuteShell(commands []ShellCommand, sessionID string, shellConfig ShellConfig, workspace string) (string, []int, error) {
+func ShellExec(commands []ShellCommand, sessionID string, shellConfig ShellConfig, workspace string) (string, []int, error) {
 	if err := validateCommands(commands, shellConfig, workspace); err != nil {
 		return "", nil, err
 	}
 	if err := os.MkdirAll(workspace, 0755); err != nil {
 		return "", nil, fmt.Errorf("create workspace: %w", err)
 	}
-	// Execute via shell to support redirections
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -138,7 +135,6 @@ func validateCommands(commands []ShellCommand, shellConfig ShellConfig, workspac
 			}
 			if len(pathLocation.Prefix) > 0 {
 				for _, prefix := range pathLocation.Prefix {
-					log.Printf("validating with prefix %s", prefix)
 					for _, arg := range command.Arguments {
 						if strings.HasPrefix(arg, prefix) {
 							if err := validatePath(arg[len(prefix):], workspace); err != nil {
