@@ -13,7 +13,6 @@ import (
 
 const (
 	mainAgentName       = "main"
-	subAgentsDir        = "agents"
 	rulesPrompt         = "rules.md"
 	agentPrompt         = "agent.md"
 	apiPrompt           = "api.md"
@@ -202,8 +201,7 @@ func LoadAgent(config *Config, parent *Agent, dir string, toolCallID string) (*A
 		availableCommands = "(None)"
 	}
 
-	agentsDir := filepath.Join(dir, subAgentsDir)
-	entries, err := os.ReadDir(agentsDir)
+	entries, err := os.ReadDir(dir)
 	var agentNames []string
 	var agentDescriptions []string
 	if err == nil && len(entries) > 0 {
@@ -211,7 +209,7 @@ func LoadAgent(config *Config, parent *Agent, dir string, toolCallID string) (*A
 			if !e.IsDir() {
 				continue
 			}
-			apiPromptPath := filepath.Join(agentsDir, e.Name(), apiPrompt)
+			apiPromptPath := filepath.Join(dir, e.Name(), apiPrompt)
 			apiPromptBytes, err := os.ReadFile(apiPromptPath)
 			if err != nil {
 				continue
@@ -306,7 +304,7 @@ func (a *Agent) Run(userInput string) (string, error) {
 					if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 						result = fmt.Sprintf("Invalid agent arguments: %v", err)
 					} else {
-						subAgentDir := filepath.Join(a.SystemDir, subAgentsDir, args.Name)
+						subAgentDir := filepath.Join(a.SystemDir, args.Name)
 						if _, err := os.Stat(subAgentDir); os.IsNotExist(err) {
 							return fmt.Sprintf("Agent %s not found: %s not exists", args.Name, subAgentDir), nil
 						}

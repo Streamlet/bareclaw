@@ -1,13 +1,15 @@
 # BareClaw
 
-An agent pipeline without tools.
+A tool‑free agent pipeline.
+
+## Design
 
 BareClaw has two primitives: `shell` and `agent`.
 
 - **`shell`** — executes a whitelisted shell command.
 - **`agent`** — spawns a sub‑agent.
 
-Agents are defined by directories. A directory containing an `agent.md` file is an agent. A directory containing an `agents/` subdirectory can spawn sub‑agents. Sub‑agents provide an `api.md` file to their parent agents. Sub‑agents can also have their own `agents/` subdirectory. The tree can be arbitrarily deep.
+An agent is defined by a directory. Any directory that contains an `agent.md` file is an agent. Any directory that contains subdirectories can spawn those subdirectories as sub‑agents. Sub‑agents provide an `api.md` file to their parent agents and have their own `agent.md`. Sub‑agents can also have their own subdirectories. The tree can be arbitrarily deep.
 
 ## Configuration
 
@@ -36,8 +38,9 @@ after = ["-o", "--output"]  # The argument after `-o` or `--output` is the path
 prefix = ["--output="]      # The text following `--output=` is the path
 ```
 
-Pay attention to the `path_location` section. Three methods — `position`, `after`, and `prefix` — can be used to specify where the path argument is.
-The system will check whether the path is inside the workspace and reject any changes outside the workspace.
+Pay attention to the `path_location` section. Three fields — `position`, `after`, and `prefix` — specify where the path argument appears.
+
+The system checks whether the path is inside the workspace and rejects any modifications outside it.
 
 
 ## Quick start
@@ -51,12 +54,12 @@ go build
 ### 2. Configure
 
 Please refer to the `Configuration` section.
-Save the content as `config.toml`, which is the default config file name.
+Save the content as `config.toml`, which is the default configuration filename.
 
 ### 3. Create your first agent
 
-Create a `system` directory for the main agent, and place `agent.md` and `rules.md` inside it. `rules.md` can be shared by all sub-agents.
-Inside `system/agents`, create subdirectories for sub‑agents as needed; each sub‑agent should contain `api.md` and `agent.md`.
+Create a `system` directory for the root agent, and place `agent.md` and `rules.md` inside it. `rules.md` can be shared by all sub-agents.
+Inside `system`, create subdirectories for sub‑agents as needed; each sub‑agent must contain `api.md` and `agent.md`.
 
 ### 4. Run
 
