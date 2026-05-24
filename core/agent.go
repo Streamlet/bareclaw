@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -39,16 +40,16 @@ var toolsDefine = []tool{
 		Type: "function",
 		Function: toolFunction{
 			Name:        toolShell,
-			Description: "Execute shell commands.",
+			Description: "Execute native shell commands. Current platform is " + runtime.GOOS + ".",
 			Parameters: jsonSchema{
 				Type: "object",
 				Properties: map[string]jsonSchema{
 					"commands": {
 						Type:        "array",
-						Description: "The shell command pipeline to execute, the previous command's output will be piped to the next command as input. Equal to `cmd1 | cmd2 | ...`. Must not use '|' in individual commands.",
+						Description: "The shell commands execute. If redirection.to_next is set, the command's stdout will be piped to the next command as stdin, equaling to `cmd1 | cmd2 | ...`. Otherwise, commands are executed independently one by one, equaling to `cmd1; cmd2; ...`.",
 						Items: &jsonSchema{
 							Type:        "object",
-							Description: "A single shell command with optional arguments and redirections. Redirections will only work for the last command in the pipeline.",
+							Description: "A single shell command with optional arguments and redirections.",
 							Properties: map[string]jsonSchema{
 								"command": {Type: "string", Description: "The single shell command to execute. Must not contain spaces or redirection operators ('>', '>>', '2>', '2>>', '2>&1'). Put arguments in the 'arguments' field, and put redirections in 'redirection' field."},
 								"arguments": {
@@ -60,7 +61,7 @@ var toolsDefine = []tool{
 								},
 								"redirection": {
 									Type:        "object",
-									Description: "If set, redirect stdout and/or stderr of the command. Only the last command in the pipeline can have redirection.",
+									Description: "If set, redirect stdout and/or stderr of the command.",
 									Properties: map[string]jsonSchema{
 										"stdout": {
 											Type: "object",
@@ -68,6 +69,7 @@ var toolsDefine = []tool{
 												"file":      {Type: "string", Description: "Redirect stdout to this file."},
 												"append":    {Type: "boolean", Description: "Use append mode for stdout redirection. Default is false (overwrite)."},
 												"to_stderr": {Type: "boolean", Description: "Redirect stdout to stderr. Default is false."},
+												"to_next":   {Type: "boolean", Description: "Redirect stdout to the next command in the pipeline. Default is false."},
 											},
 										},
 										"stderr": {
@@ -115,6 +117,7 @@ type shellStdoutRedirection struct {
 	File     string `json:"file,omitempty"`
 	Append   bool   `json:"append,omitempty"`
 	ToStdErr bool   `json:"to_stderr,omitempty"`
+	ToNext   bool   `json:"to_next,omitempty"`
 }
 
 type shellStderrRedirection struct {
@@ -311,7 +314,7 @@ func (a *Agent) Run(userInput string) (string, error) {
 							result = fmt.Sprintf("Agent %s not found: %s not exists", args.Name, subAgentDir)
 							break
 						}
-						subAgent, err := LoadAgent(nil, a, subAgentDir, tc.ID)
+						subAgent, err := LoadAgent(a.Config, a, subAgentDir, tc.ID)
 						if err != nil {
 							result = fmt.Sprintf("load sub-agent %s: %v", args.Name, err)
 							break
@@ -331,17 +334,21 @@ func (a *Agent) Run(userInput string) (string, error) {
 							result = fmt.Sprintf("Invalid shell arguments: %v", err)
 							break
 						}
-						output, exitCodes, err := shellExec(args.Commands, a.SessionID, a.Config.Shell, a.WorkDir)
+						type ShellResultsWithError struct {
+							Results []shellResult `json:"results,omitempty"`
+							Error   string        `json:"error,omitempty"`
+						}
+						var shellResults ShellResultsWithError
+						shellResults.Results, err = shellExec(args.Commands, a.Config.Shell, a.WorkDir)
 						if err != nil {
-							result = fmt.Sprintf("Execution failed: %s", err.Error())
+							shellResults.Error = err.Error()
+						}
+						resultBytes, err := json.Marshal(shellResults)
+						if err != nil {
+							result = fmt.Sprintf("Failed to marshal shell results: %s\n%v", err.Error(), shellResults)
 							break
 						}
-						result = "Exit Codes: " + fmt.Sprint(exitCodes)
-						if output == "" {
-							result += "\n(No output)"
-							break
-						}
-						result += "\nOutput:\n" + output
+						result = string(resultBytes)
 						break
 					}
 				default:
@@ -352,18 +359,17 @@ func (a *Agent) Run(userInput string) (string, error) {
 					ToolCallID: tc.ID,
 					Content:    result,
 				})
+				log.Printf("[%s] ToolResult: %s", a.PathName, truncate(result, 200))
 			}
 		} else {
-			if msg.Content != "" {
-				a.appendHistory(message{
-					Role:    roleAssistant,
-					Content: msg.Content,
-				})
-				log.Printf("[%s]: %s", a.PathName, msg.Content)
-				return msg.Content, nil
-			} else {
+			if msg.Content == "" {
 				return "", fmt.Errorf("empty response from model")
 			}
+			a.appendHistory(message{
+				Role:    roleAssistant,
+				Content: msg.Content,
+			})
+			return msg.Content, nil
 		}
 	}
 	return "", fmt.Errorf("reached max steps %d without completion", a.Config.LLM.MaxSteps)

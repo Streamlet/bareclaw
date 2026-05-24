@@ -13,38 +13,46 @@ import (
 	"time"
 )
 
-func shellExec(commands []shellCommand, sessionID string, shellConfig ShellConfig, workspace string) (string, []int, error) {
+type shellResult struct {
+	StdOut   string `json:"stdout"`
+	StdErr   string `json:"stderr"`
+	ExitCode int    `json:"exit_code"`
+}
+
+func shellExec(commands []shellCommand, shellConfig ShellConfig, workspace string) ([]shellResult, error) {
 	if err := validateCommands(commands, shellConfig, workspace); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if err := os.MkdirAll(workspace, 0755); err != nil {
-		return "", nil, fmt.Errorf("create workspace: %w", err)
+		return nil, fmt.Errorf("create workspace: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	exec_cmds := []*exec.Cmd{}
+	execCommands := make([]*exec.Cmd, len(commands))
+	stdOutWriters := make([]*bytes.Buffer, len(commands))
+	stdErrWriters := make([]*bytes.Buffer, len(commands))
+	shellResults := make([]shellResult, len(commands))
 	var lastStdout io.ReadCloser
-	var finalOutput bytes.Buffer
 	for i, cmd := range commands {
-		var exec_cmd *exec.Cmd
+		var execCmd *exec.Cmd
 		if runtime.GOOS == "windows" {
 			args := append([]string{"/C", cmd.Command}, cmd.Arguments...)
-			exec_cmd = exec.CommandContext(ctx, "cmd", args...)
+			execCmd = exec.CommandContext(ctx, "cmd", args...)
 		} else {
-			exec_cmd = exec.CommandContext(ctx, cmd.Command, cmd.Arguments...)
+			execCmd = exec.CommandContext(ctx, cmd.Command, cmd.Arguments...)
 		}
-		exec_cmd.Dir = workspace
+		execCmd.Dir = workspace
 		if lastStdout != nil {
-			exec_cmd.Stdin = lastStdout
+			execCmd.Stdin = lastStdout
 		}
-		stdout, err := exec_cmd.StdoutPipe()
+		stdout, err := execCmd.StdoutPipe()
 		if err != nil {
-			return "", nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+			return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 		}
 		if cmd.Redirection.StdOut.ToStdErr {
-			exec_cmd.Stdout = exec_cmd.Stderr
+			execCmd.Stdout = execCmd.Stderr
 		} else if cmd.Redirection.StdOut.File != "" {
 			fileMode := os.O_CREATE | os.O_WRONLY
 			if cmd.Redirection.StdOut.Append {
@@ -54,14 +62,18 @@ func shellExec(commands []shellCommand, sessionID string, shellConfig ShellConfi
 			}
 			stdoutFile, err := os.OpenFile(filepath.Join(workspace, cmd.Redirection.StdOut.File), fileMode, 0644)
 			if err != nil {
-				return "", nil, fmt.Errorf("failed to create stdout file: %w", err)
+				return nil, fmt.Errorf("failed to create stdout file: %w", err)
 			}
-			exec_cmd.Stdout = stdoutFile
-		} else if i == len(commands)-1 {
-			exec_cmd.Stdout = &finalOutput
+			execCmd.Stdout = stdoutFile
+		} else if cmd.Redirection.StdOut.ToNext {
+			lastStdout = stdout
+		} else {
+			lastStdout = nil
+			stdOutWriters[i] = &bytes.Buffer{}
+			execCmd.Stdout = stdOutWriters[i]
 		}
 		if cmd.Redirection.StdErr.ToStdOut {
-			exec_cmd.Stderr = exec_cmd.Stdout
+			execCmd.Stderr = execCmd.Stdout
 		} else if cmd.Redirection.StdErr.File != "" {
 			fileMode := os.O_CREATE | os.O_WRONLY
 			if cmd.Redirection.StdErr.Append {
@@ -71,34 +83,46 @@ func shellExec(commands []shellCommand, sessionID string, shellConfig ShellConfi
 			}
 			stderrFile, err := os.OpenFile(filepath.Join(workspace, cmd.Redirection.StdErr.File), fileMode, 0644)
 			if err != nil {
-				return "", nil, fmt.Errorf("failed to create stderr file: %w", err)
+				return nil, fmt.Errorf("failed to create stderr file: %w", err)
 			}
-			exec_cmd.Stderr = stderrFile
-		} else if i == len(commands)-1 {
-			exec_cmd.Stderr = &finalOutput
-		}
-		exec_cmds = append(exec_cmds, exec_cmd)
-		lastStdout = stdout
-	}
-	for _, exec_cmd := range exec_cmds {
-		if err := exec_cmd.Start(); err != nil {
-			return "", nil, fmt.Errorf("failed to start command: %w", err)
-		}
-	}
-	for _, exec_cmd := range exec_cmds {
-		if err := exec_cmd.Wait(); err != nil {
-			return "", nil, fmt.Errorf("command execution failed: %w", err)
-		}
-	}
-	exitCodes := []int{}
-	for _, exec_cmd := range exec_cmds {
-		if exec_cmd.ProcessState != nil {
-			exitCodes = append(exitCodes, exec_cmd.ProcessState.ExitCode())
+			execCmd.Stderr = stderrFile
 		} else {
-			exitCodes = append(exitCodes, -1) // Unknown exit code
+			stdErrWriters[i] = &bytes.Buffer{}
+			execCmd.Stderr = stdErrWriters[i]
+		}
+		execCommands[i] = execCmd
+	}
+	for i, command := range execCommands {
+		if err := command.Start(); err != nil {
+			return shellResults, fmt.Errorf("failed to start command '%s', error: %w", commands[i].Command, err)
+		}
+		if !commands[i].Redirection.StdOut.ToNext {
+			if err := command.Wait(); err != nil {
+				return shellResults, fmt.Errorf("failed to wait for command '%s', error: %w", commands[i].Command, err)
+			}
 		}
 	}
-	return finalOutput.String(), exitCodes, nil
+	for i, command := range execCommands {
+		if commands[i].Redirection.StdOut.ToNext {
+			if err := command.Wait(); err != nil {
+				return shellResults, fmt.Errorf("failed to wait for command '%s', error: %w", commands[i].Command, err)
+			}
+		}
+	}
+	for i, execCmd := range execCommands {
+		if stdOutWriters[i] != nil {
+			shellResults[i].StdOut = stdOutWriters[i].String()
+		}
+		if stdErrWriters[i] != nil {
+			shellResults[i].StdErr = stdErrWriters[i].String()
+		}
+		if execCmd.ProcessState != nil {
+			shellResults[i].ExitCode = execCmd.ProcessState.ExitCode()
+		} else {
+			shellResults[i].ExitCode = -1 // Unknown exit code
+		}
+	}
+	return shellResults, nil
 }
 
 func validateCommands(commands []shellCommand, shellConfig ShellConfig, workspace string) error {
@@ -160,8 +184,11 @@ func validateCommands(commands []shellCommand, shellConfig ShellConfig, workspac
 		if command.Redirection.StdErr.File != "" && validatePath(command.Redirection.StdErr.File, workspace) != nil {
 			return fmt.Errorf("Rejected: stderr file '%s' is not a valid path within the workspace", command.Redirection.StdErr.File)
 		}
-		if index != len(commands)-1 && (command.Redirection.StdOut.File != "" || command.Redirection.StdOut.ToStdErr) {
-			return fmt.Errorf("Rejected: only the last command in the pipeline can redirect stdout")
+		if command.Redirection.StdOut.ToNext && (command.Redirection.StdOut.File != "" || command.Redirection.StdOut.ToStdErr) {
+			return fmt.Errorf("Rejected: stdout cannot be redirected to next command and also to a file or stderr at the same time")
+		}
+		if command.Redirection.StdOut.ToNext && index == len(commands)-1 {
+			return fmt.Errorf("Rejected: stdout cannot be redirected to next command when it is the last command in the pipeline")
 		}
 	}
 	return nil
